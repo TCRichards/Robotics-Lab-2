@@ -1,0 +1,8 @@
+Steps:
+
+1) Touch center button
+2) Move forward 1.2 meters
+2) Pause until center buton is pressed
+3) Move until 50 cm from wall. 
+4) Beep once, then pause until center button is pressed again
+5) Move forward until bump into the wall, then reverse 50 cm
