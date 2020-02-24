@@ -14,11 +14,11 @@ from pybricks.parameters import (Port, Stop, Direction, Button, Color,
                                  SoundFile, ImageFile, Align)
 from pybricks.tools import print, wait, StopWatch
 
+from pose import Pose
 from collections import deque
 import time
-
-
-PI = 3.14159
+from math import pi as PI
+from threading import Thread
 
 # Initialize hardware components
 leftMotor = Motor(Port.B)
@@ -30,6 +30,10 @@ ultra = UltrasonicSensor(Port.S4)
 # Physical information about the robot
 r_wheel = 2.5                       # Radius of the wheel in cm
 L = 9.15                            # Distance between the two wheels
+pose = Pose(r_wheel, L, leftMotor, rightMotor)
+
+updateThread = Thread(target=pose.monitorPose, args=(1e-5,), daemon=True)
+updateThread.start()
 
 # Some adjustable variables to mess with
 safeSpeed = 300
