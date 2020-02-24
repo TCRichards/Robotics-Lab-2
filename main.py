@@ -28,15 +28,13 @@ bump_side = TouchSensor(Port.S2)
 ultra = UltrasonicSensor(Port.S4)
 
 # Physical information about the robot
-r_wheel = 2.5                       # Radius of the wheel in cm
-L = 9.15                            # Distance between the two wheels
-pose = Pose(r_wheel, L, leftMotor, rightMotor)
-
+r_wheel = 2.5            # Radius of the wheels (cm)
+L = 9.15                 # Distance between the two wheels (cm)
+pose = Pose(r_wheel, L, leftMotor, rightMotor)  # Object storing the robot's pose at any time
 updateThread = Thread(target=pose.monitorPose, args=(1e-5,), daemon=True)
-updateThread.start()
 
 # Some adjustable variables to mess with
-safeSpeed = 300
+safeSpeed = 300     # deg / s
 sprintSpeed = 300
 
 
@@ -230,6 +228,7 @@ def p1():
 if __name__ == '__main__':
     print('Beginning Run.  Press ENTER to start...')
     waitForEnter()
+    updateThread.start()    # Only begin tracking the pose once the lab begins
 
     # scanDistances()
 
