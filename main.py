@@ -120,6 +120,7 @@ def turn(direction, R, omega, sweepAngle, pause=False):
 
 # Create a map of distances to the nearest obstacle in each angle
 def scanDistances(angle=360):
+    print('Scanning Distances')
     # Total time for rotation in ms
     totalTime = rotate(angle, reduceAngle=False, pause=False)
     # Thread(target=rotate, args=(angle,), kwargs={'reduceAngle': False, 'pause': True}).start()  # Run the rotation in a separate thread (pause=False not working?)
@@ -136,19 +137,21 @@ def scanDistances(angle=360):
 
 # TODO: Implement this
 def checkWallEnd():
+    print('CHecking wall end')
     cutoffDist = 60
-    distDict = scanDistances(angle=-45)
+    distDict = scanDistances(angle=-80)
     atEnd = True
     for item in distDict.items():           # Entries stored as (Angle : Distance (cm))
-        if item[0] < 5:
-            distDict.pop(item[0])           # Don't mess with angles < 5 degrees
+        if item[0] < 10:
+            distDict.pop(item[0])           # Don't mess with angles < 5 degrees -- may pick up the original obstacle
             continue
         atEnd &= (item[1] > cutoffDist)     # If any of the distances are above the cutoff, this will be false
     if atEnd:   # If we are indeed at the end, exit out
         return True
+        print('At the end')
     else:       # If we're not at the end, rotate the robot so that the ultrasound sensor directly faces the obstacle
         turnAngle = -0.4 * min((item[1], item[0]) for item in distDict.items())[1]  # Find the angle corresponding to the minimum distance
-        rotate(turnAngle, pause=True)       # Turn
+        rotate(turnAngle, pause=True)
         return False
      
 
@@ -158,9 +161,9 @@ def PID(x_set, pastQueue, dt):
     queueSize = 100
 
     # Gains for P, I, and D -- Determine by trial and error
-    k_p = 3
+    k_p = 6.0
     k_I = 0.05
-    k_d = 1.3
+    k_d = 2.3
 
     dist_cm = ultra.distance() / 10
     if dist_cm > 180:  # Device error that occurs when too close or if the sensor is angled to sharply
@@ -190,25 +193,36 @@ def traceWall(x_set=20):
     endTime = time.time() + 40
     lastResetTime = 0
     lastWallCheckTime = 0
-    minDelay = 0.5
-    lastTime = time.time()
+    minDelay = 2
+    startTime = time.time()
+    lastTime = startTime
     while time.time() < endTime:
         dt = time.time() - lastTime
         u = PID(x_set, pastQueue, dt)
         if u is None:
             continue
 
-        if u == -1000 and lastWallCheckTime + minDelay:          # Output given when the distance measured is 255 cm
+        if u == -1000 and (time.time() > lastWallCheckTime + minDelay) and (time.time() > startTime + 3 * minDelay):          # Output given when the distance measured is 255 cm
             lastWallCheckTime = time.time()
+            lastResetTime = time.time()
             if checkWallEnd():  # Scans distances and returns if this is really the end of the wall
                 return True
+            else:
+                continue
 
         # If we're still along the wall, map the input to a correction -> 255 means that we're very close to an obstacle
         correction = u
+        # Set bounds for the correction to avoid spinning out of control
+        if correction < 0:
+            correction = max(-100, correction)
+        else:
+            correction = min(100, correction)
 
         # This occurs when we're really close to the wall or bumping into it -- especially right at the bend
-        if (correction == -1000 or bump_front.pressed() or bump_side.pressed()) and time.time() > lastResetTime + minDelay:
-            reverseDistance(3, pause=True)
+        if (correction == -1000 and (time.time() > lastResetTime + minDelay) and (time.time() > startTime + 3 * minDelay)) \
+            or bump_front.pressed() or bump_side.pressed():
+            print('CORRECTING')
+            reverseDistance(12, pause=True)
             rotate(-75, reduceAngle=False, pause=True)  # Doesn't seem right
             lastResetTime = time.time()
 
@@ -221,13 +235,9 @@ def traceWall(x_set=20):
 
 # Rotate the robot in place by the given angle
 def rotate(angle, reduceAngle=False, pause=True):
-    u = 250 # Angular speed
+    u = 200 # Angular speed
     if reduceAngle:  # Determine the minimum angle that needs to be travelled
-        angle %= 360
-        if angle > 180: # We can more efficiently reach the given angle by going in the opposite direction
-            angle = 360 - angle
-            u_R = -u
-            u_L = u
+        raise Exception('reduceAngle has not been implemented yet!')
     if angle > 0:
         # Angular velocities of the wheels (degrees)
         u_R = u
@@ -253,8 +263,9 @@ def returnToStartTheta():  # YZ
 
 def leaveWall():  # YZ
     brick.sound.beep(440, 1, 1)
-    # rotate(toDegrees(pose.theta) - 90, reduceAngle=False, pause=True)
-    moveDistance(3, pause=True) # Continue a little past the end of the wall to avoid catching it
+    rotate(-(toDegrees(pose.theta) + 90), reduceAngle=False, pause=True)
+    moveDistance(18, pause=True) # Continue a little past the end of the wall to avoid catching it
+    time.sleep(0.5)
     returnToStartTheta()  # rotates to original angle
     moveDistance(85, pause=True)  # moves forward 0.85 meters and stops (aiming for 0.7 m past the obstacle)
 
@@ -265,9 +276,9 @@ def bumpAndTurn():
     # Add timer for redundancy -- Assume this won't last more than 30 s
     while not bump_front.pressed() and time.time() < latestEnd:
         pass
-    reverseDistance(8, pause=True)
-    rotate(-90, reduceAngle=False, pause=True)
-    pose.theta += toRadians(-90)    # Hard code in this rotation so that we can delay dead reckoning
+    reverseDistance(18, pause=True)
+    rotate(-95, reduceAngle=False, pause=True)
+    pose.theta += toRadians(-95)    # Hard code in this rotation so that we can delay dead reckoning
 
 
 def calibratePose():
@@ -287,6 +298,7 @@ def calibratePose():
 if __name__ == '__main__':
 
     print('Beginning Run.  Press ENTER to start...')
+    # print(checkWallEnd())
     waitForEnter()
 
     # # # Step 1: Move forward (30 - 60 cm) until the robot is within 30 cm of the wall    
@@ -295,7 +307,7 @@ if __name__ == '__main__':
     updateThread.start()
 
     # # # Step 3: Move forward and continue tracing the wall as far as it extends
-    traceWall(x_set=23)
+    traceWall(x_set=18)
 
     # # # Step 4: Once the wall ends, turn left and leave the wall
     leaveWall()
