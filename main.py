@@ -1,7 +1,7 @@
 #!/usr/bin/env pybricks-micropython
 
 '''
-Python submission for COMP 581 Lab 1
+Python submission for COMP 581 Lab 2
 Member 1: Thomas Richards; 7301-22201
 Member 2: Yasmine Zeffrey; 7301-26635
 '''
@@ -31,7 +31,7 @@ ultra = UltrasonicSensor(Port.S4)
 r_wheel = 2.5            # Radius of the wheels (cm)
 L = 9.15                 # Distance between the two wheels (cm)
 pose = Pose(r_wheel, L, leftMotor, rightMotor)  # Object storing the robot's pose at any time
-updateThread = Thread(target=pose.monitorPose, args=(1e-5,), daemon=True)
+updateThread = Thread(target=pose.monitorPose)
 
 # Some adjustable variables to mess with
 safeSpeed = 300     # deg / s
@@ -39,6 +39,14 @@ sprintSpeed = 300
 
 
 # ====================== Helper Functions ========================================
+
+def toDegrees(angle):
+    return angle * 180 / PI
+
+
+def toRadians(angle):
+    return angle * PI / 180
+
 
 # Hangs the code until the center gray button on the brick is pressed
 def waitForEnter():
@@ -51,7 +59,6 @@ def waitForEnter():
 def moveDistance(dist, pause=False):
     rots = dist / (2 * PI * r_wheel)
     dTheta = rots * 360
-    print('In order to move {} cm, the wheel must rotate {} times'.format(dist, rots))
 
     leftMotor.run_angle(safeSpeed, dTheta, Stop.BRAKE, False) #, stop_type=Stop.BRAKE, wait=False)
     rightMotor.run_angle(safeSpeed, dTheta, Stop.BRAKE, pause) # , stop_type=Stop.BRAKE, wait=False)
@@ -71,10 +78,8 @@ def brake():
 def reverseDistance(dist, pause=False):
     rots = dist / (2 * PI * r_wheel)
     dTheta = rots * 360
-    print('In order to reverse {} cm, the wheel must rotate {} times'.format(dist, rots))
 
     moveSpeed = -safeSpeed
-    print('Moving at speed {:.2f} deg/s'.format(moveSpeed))
     leftMotor.run_angle(moveSpeed, dTheta, Stop.BRAKE, False) #, stop_type=Stop.BRAKE, wait=False)
     rightMotor.run_angle(moveSpeed, dTheta, Stop.BRAKE, pause) # , stop_type=Stop.BRAKE, wait=False)
 
@@ -89,7 +94,7 @@ def approachObstacle(finalDist):
             break
 
 
-# Turn in the given direction at the given speed
+# Traces an arc of radius R the given angular speed
 def turn(direction, R, omega, sweepAngle, pause=False):
     # Expressions for the necessary angular velocities (assumes counterclockwise)
     u_L = (omega / r_wheel) * (R - L / 2)
@@ -106,23 +111,60 @@ def turn(direction, R, omega, sweepAngle, pause=False):
     theta_L = (R + L / 2) * sweepAngle / r_wheel   # Angle (degrees) that each wheel should rotate
     theta_R = (R - L / 2) * sweepAngle / r_wheel
 
-    print('Turning {}, {} degrees'.format(theta_L, theta_R))
+    # print('Turning {}, {} degrees'.format(theta_L, theta_R))
     leftMotor.run_angle(u_L, theta_L, Stop.BRAKE, False)
     rightMotor.run_angle(u_R, theta_R, Stop.BRAKE, pause)
 
 
+# ======================================== Wall Tracing-Specific Functions =========================================
+
+# Create a map of distances to the nearest obstacle in each angle
+def scanDistances(angle=360):
+    # Total time for rotation in ms
+    totalTime = rotate(angle, reduceAngle=False, pause=False)
+    # Thread(target=rotate, args=(angle,), kwargs={'reduceAngle': False, 'pause': True}).start()  # Run the rotation in a separate thread (pause=False not working?)
+    dt = totalTime / abs(angle)          # Time per angle in s
+    dists = {}  # Dict where each entry is {angle : distance (cm)}
+    for i in range(int(abs(angle))):
+        dist_cm = ultra.distance() / 10
+        dists.update({i: dist_cm})
+        time.sleep(dt)
+    if angle != 360:    # Unless we made a full rotation, turn back to the original position
+        rotate(-angle, pause=True)
+    return dists
+
+
+# TODO: Implement this
+def checkWallEnd():
+    cutoffDist = 60
+    distDict = scanDistances(angle=-45)
+    atEnd = True
+    for item in distDict.items():           # Entries stored as (Angle : Distance (cm))
+        if item[0] < 5:
+            distDict.pop(item[0])           # Don't mess with angles < 5 degrees
+            continue
+        atEnd &= (item[1] > cutoffDist)     # If any of the distances are above the cutoff, this will be false
+    if atEnd:   # If we are indeed at the end, exit out
+        return True
+    else:       # If we're not at the end, rotate the robot so that the ultrasound sensor directly faces the obstacle
+        turnAngle = -0.4 * min((item[1], item[0]) for item in distDict.items())[1]  # Find the angle corresponding to the minimum distance
+        rotate(turnAngle, pause=True)       # Turn
+        return False
+     
+
 # Implements PID to determine the magnitude of the control output necessary to make the robot approach the set distance
 # Returns the control input u, which corresponds to how much faster the left wheel turns than the right
-def PID(x_set, pastQueue):
-    queueSize = 5
+def PID(x_set, pastQueue, dt):
+    queueSize = 100
 
-    k_p = 5
+    # Gains for P, I, and D -- Determine by trial and error
+    k_p = 3
     k_I = 0.05
-    k_d = 0.5
+    k_d = 1.3
 
     dist_cm = ultra.distance() / 10
-    if dist_cm == 255:  # Device error that occurs when too close
-        return -1000    # Turn right ASAP! This will be handled explicitly in the traceWall() function
+    if dist_cm > 180:  # Device error that occurs when too close or if the sensor is angled to sharply
+        return -1000   # Turn right ASAP! This will be handled explicitly in the traceWall() function
 
     err = dist_cm - x_set
 
@@ -130,47 +172,45 @@ def PID(x_set, pastQueue):
         pastQueue.pop()
     pastQueue.appendleft(err)
 
-
     # Approximate an integral by summing over the most recent measurements
-    integral = sum(pastQueue) / len(pastQueue)
+    integral = sum(pastQueue) * dt / len(pastQueue)
     
     if len(pastQueue) > 3:
         # Lastly approximate the derivative by subtracting a recent measurement from the current measurement
-        deriv = err - list(pastQueue)[-3]
+        deriv = (err - list(pastQueue)[-3]) / dt
     else:
         deriv = 0
 
-    # print('P term = {}\nI term = {}\nD term = {}'.format(k_p * err, k_I * integral, k_d * deriv))
-
     # Positive outputs correspond to being further from the set point than desire
-
     return k_p * err + k_I * integral + k_d * deriv    # The control input that we want
 
 
-def traceWall(x_set=25):
+def traceWall(x_set=20):
     pastQueue = deque()
-    endTime = time.time() + 30
+    endTime = time.time() + 40
     lastResetTime = 0
-    minDelay = 1.5
+    lastWallCheckTime = 0
+    minDelay = 0.5
+    lastTime = time.time()
     while time.time() < endTime:
-        u = PID(x_set, pastQueue)
+        dt = time.time() - lastTime
+        u = PID(x_set, pastQueue, dt)
         if u is None:
             continue
 
-        scale = 0.5
-        correction = scale * u
-        # if u > 0:   # Try to avoid overcorrections by capping maximum values
-        #     print('Turn Left at {}'.format(correction))
-        # else:
-        #     print('Turn Right at {}'.format(abs(correction)))
+        if u == -1000 and lastWallCheckTime + minDelay:          # Output given when the distance measured is 255 cm
+            lastWallCheckTime = time.time()
+            if checkWallEnd():  # Scans distances and returns if this is really the end of the wall
+                return True
+
+        # If we're still along the wall, map the input to a correction -> 255 means that we're very close to an obstacle
+        correction = u
 
         # This occurs when we're really close to the wall or bumping into it -- especially right at the bend
-        if (correction < -400 or bump_front.pressed() or bump_side.pressed()) and time.time() > lastResetTime + minDelay:
-            reverseDistance(5, pause=True)
-            rotate(-50, reduceAngle=True, pause=True)  # Doesn't seem right
-            print('REPOSITIONING TO THE RIGHT')
+        if (correction == -1000 or bump_front.pressed() or bump_side.pressed()) and time.time() > lastResetTime + minDelay:
+            reverseDistance(3, pause=True)
+            rotate(-75, reduceAngle=False, pause=True)  # Doesn't seem right
             lastResetTime = time.time()
-
 
         # u = 0 -> continue straight
         # u >> 0 -> turn left
@@ -179,69 +219,83 @@ def traceWall(x_set=25):
         rightMotor.run(safeSpeed + correction)
 
 
-# Create a map of distances to the nearest obstacle in each angle
-def scanDistances():                           
-    totalTime = rotate(360, pause=False)    # Total time for rotation in ms
-    dt = totalTime / 360           # Time per angle in s
-    dists = {}  # Dict where each entry is {angle : distance (cm)}
-    for i in range(360):
-        dist_cm = ultra.distance() / 10
-        dists.update({i: dist_cm})
-        time.sleep(dt)
-    return dists
-    
-
 # Rotate the robot in place by the given angle
-def rotate(angle, reduceAngle=False, pause=False):
+def rotate(angle, reduceAngle=False, pause=True):
     u = 250 # Angular speed
     if reduceAngle:  # Determine the minimum angle that needs to be travelled
         angle %= 360
-    
-    if angle > 180: # We can more efficiently reach the given angle by going in the opposite direction
-        angle = 360 - angle
-        u_R = -u
-        u_L = u
-    else:
+        if angle > 180: # We can more efficiently reach the given angle by going in the opposite direction
+            angle = 360 - angle
+            u_R = -u
+            u_L = u
+    if angle > 0:
         # Angular velocities of the wheels (degrees)
         u_R = u
         u_L = -u
+    else:
+        u_R = -u
+        u_L = u
+
     du = abs(u_R - u_L)
     t = 1000 * L * abs(angle) / (r_wheel * (du))    # Time to run the motors for (ms)
-    t *= 1.15    # Fudge factor (Needs to be experimentally tuned)
+    t *= 1.37                                      # Fudge factor (Needs to be experimentally tuned)
     leftMotor.run_time(u_L, t, Stop.BRAKE, False)
     rightMotor.run_time(u_R, t, Stop.BRAKE, pause)
+
+    # pose.theta += toRadians(angle)
     return t / 1000    # Return the total rotation time in s
     
 
-def p1():
+def returnToStartTheta():  # YZ
+    print('Reached the Wall\'s End: Theta = {} Degrees'.format(toDegrees(pose.theta)))
+    rotate(-toDegrees(pose.theta), reduceAngle=False, pause=True)
+
+
+def leaveWall():  # YZ
+    brick.sound.beep(440, 1, 1)
+    # rotate(toDegrees(pose.theta) - 90, reduceAngle=False, pause=True)
+    moveDistance(3, pause=True) # Continue a little past the end of the wall to avoid catching it
+    returnToStartTheta()  # rotates to original angle
+    moveDistance(85, pause=True)  # moves forward 0.85 meters and stops (aiming for 0.7 m past the obstacle)
+
+
+def bumpAndTurn():
     moveForever(400)    # Don't care much about accuracy -- just time
     latestEnd = time.time() + 30    
     # Add timer for redundancy -- Assume this won't last more than 30 s
     while not bump_front.pressed() and time.time() < latestEnd:
         pass
-    reverseDistance(20, pause=True)
-    rotate(-90, reduceAngle=True, pause=True)
+    reverseDistance(8, pause=True)
+    rotate(-90, reduceAngle=False, pause=True)
+    pose.theta += toRadians(-90)    # Hard code in this rotation so that we can delay dead reckoning
+
+
+def calibratePose():
+    timeArr = [9e-4]
+    results = []
+    for t in timeArr:
+        pose.theta = 0
+        updateThread = Thread(target=pose.monitorPose, args=(t,))
+        updateThread.start()
+        rotate(360, pause=True)
+        results.append(pose.theta)
+    print(results)
+
 
 # ======================= Main function to organize behavior ================
 
-
 if __name__ == '__main__':
+
     print('Beginning Run.  Press ENTER to start...')
     waitForEnter()
-    updateThread.start()    # Only begin tracking the pose once the lab begins
 
-    # scanDistances()
+    # # # Step 1: Move forward (30 - 60 cm) until the robot is within 30 cm of the wall    
+    # # # Step 2: Turn right and allign parallel to the wall
+    bumpAndTurn()
+    updateThread.start()
 
-    # Step 1: Move forward (30 - 60 cm) until the robot is within 30 cm of the wall    
-    # Step 2: Turn right and allign parallel to the wall
-    # p1()
+    # # # Step 3: Move forward and continue tracing the wall as far as it extends
+    traceWall(x_set=23)
 
-    # Step 3: Move forward and continue tracing the wall as far as it extends
-    traceWall(x_set=20)
-
-    # Step 4: Once the wall ends, turn left and leave the wall
-    # Use scanDistances() to determine where the wall ends for real, and doing a similar tracing
-    # for its entire duration
-
-
-    # Step 5: Having left the wall, drive exactly 0.7 m away from the original side of the wall and brake
+    # # # Step 4: Once the wall ends, turn left and leave the wall
+    leaveWall()
